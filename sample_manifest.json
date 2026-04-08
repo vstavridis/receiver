@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "displays": {
+    "M1": {
+      "job_code": "JOB-2026-001",
+      "pdf_url": "https://example.com/pdfs/JOB-2026-001.pdf",
+      "version": 1,
+      "sent_at": "2026-04-08T10:15:00Z",
+      "message": "Ready for machine M1"
+    },
+    "M2": {
+      "job_code": "JOB-2026-002",
+      "pdf_url": "https://example.com/pdfs/JOB-2026-002.pdf",
+      "version": 1,
+      "sent_at": "2026-04-08T10:16:00Z",
+      "message": "Ready for machine M2"
+    }
+  }
+}
