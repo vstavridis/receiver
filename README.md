@@ -1,49 +1,34 @@
-# Receiver app
+# Receiver Pi v3
 
-Deploy this folder as a separate Streamlit app.
+This version adds:
 
-## What it does
+- fullscreen display mode
+- auto refresh
+- sound alert when a new version appears
 
-- reads a public `manifest.json`
-- looks up the entry for the machine id (`M1`, `M2`, etc.)
-- shows the assigned PDF
-- auto-refreshes every few seconds
+## Deploy
+Deploy this as a Streamlit app.
 
-## Receiver URL examples
+## URL examples
 
-For Raspberry Pi monitor 1:
-
+Monitor 1:
 ```text
-https://receiver-pi.streamlit.app/?machine=M1&manifest_url=https://raw.githubusercontent.com/YOUR-USER/YOUR-REPO/main/manifest.json
+https://receiver-pi.streamlit.app/?machine=M1&manifest_url=https://raw.githubusercontent.com/vstavridis/assets/main/manifest.json
 ```
 
-For Raspberry Pi monitor 2:
-
+Monitor 2:
 ```text
-https://receiver-pi.streamlit.app/?machine=M2&manifest_url=https://raw.githubusercontent.com/YOUR-USER/YOUR-REPO/main/manifest.json
+https://receiver-pi.streamlit.app/?machine=M2&manifest_url=https://raw.githubusercontent.com/vstavridis/assets/main/manifest.json
 ```
 
-## Alternative: Streamlit secret
-
-In the receiver app secrets:
-
-```toml
-MANIFEST_URL = "https://raw.githubusercontent.com/YOUR-USER/YOUR-REPO/main/manifest.json"
-```
-
-Then use URLs like:
-
+Disable sound:
 ```text
-https://receiver-pi.streamlit.app/?machine=M1
-https://receiver-pi.streamlit.app/?machine=M2
+&sound=0
 ```
 
-## Raspberry Pi setup idea
+## Raspberry Pi kiosk
 
-Open Chromium in kiosk mode with the receiver URL for each machine.
-
-Example:
-
+Use Chromium kiosk mode:
 ```bash
-chromium-browser --kiosk "https://receiver-pi.streamlit.app/?machine=M1&manifest_url=https://raw.githubusercontent.com/YOUR-USER/YOUR-REPO/main/manifest.json"
+chromium-browser --kiosk "https://receiver-pi.streamlit.app/?machine=M1&manifest_url=https://raw.githubusercontent.com/vstavridis/assets/main/manifest.json"
 ```
