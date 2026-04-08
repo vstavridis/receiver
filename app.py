@@ -1,142 +1,52 @@
-import json
 import time
+import json
 from datetime import datetime, timezone
-from urllib.parse import urlencode
+from urllib.parse import quote
 
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 
-APP_TITLE = "Slitting Receiver"
+st.set_page_config(page_title="Slitting Receiver", layout="wide")
+
 DEFAULT_REFRESH_SECONDS = 3
-DEFAULT_MACHINE = "M1"
-REQUEST_TIMEOUT = 10
 
 
-def get_query_param(name: str, default):
+def get_manifest_url():
     qp = st.query_params
-    value = qp.get(name, default)
-    if isinstance(value, list):
-        value = value[0] if value else default
-    return value
-
-
-def get_machine() -> str:
-    machine = get_query_param("machine", DEFAULT_MACHINE)
-    machine = str(machine).strip().upper() or DEFAULT_MACHINE
-    return machine
-
-
-def get_refresh_seconds() -> int:
-    raw = get_query_param("refresh", DEFAULT_REFRESH_SECONDS)
+    url_from_qp = qp.get("manifest_url")
+    if url_from_qp:
+        return str(url_from_qp)
     try:
-        return max(2, int(raw))
+        return st.secrets["MANIFEST_URL"]
     except Exception:
-        return DEFAULT_REFRESH_SECONDS
+        return None
 
 
-def get_manifest_url() -> str:
-    from_secret = str(st.secrets.get("MANIFEST_URL", "")).strip()
-    if from_secret:
-        return from_secret
-    from_query = str(get_query_param("manifest_url", "")).strip()
-    return from_query
+def get_machine_id():
+    qp = st.query_params
+    machine = qp.get("machine", "M1")
+    return str(machine)
 
 
-def now_utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def fetch_manifest(url: str) -> dict:
+    r = requests.get(url, timeout=15, headers={"Cache-Control": "no-cache"})
+    r.raise_for_status()
+    return r.json()
 
 
-def cache_busted(url: str, version: str | int | None) -> str:
-    if not version:
-        version = int(time.time())
-    sep = "&" if "?" in url else "?"
-    return f"{url}{sep}{urlencode({'v': version})}"
-
-
-def fetch_manifest(manifest_url: str) -> tuple[dict | None, str | None]:
+def parse_ts(value):
+    if not value:
+        return None
     try:
-        response = requests.get(manifest_url, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        return response.json(), None
-    except requests.RequestException as exc:
-        return None, f"Network error while reading manifest: {exc}"
-    except json.JSONDecodeError as exc:
-        return None, f"Manifest is not valid JSON: {exc}"
+        if value.endswith("Z"):
+            value = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
 
 
-def resolve_job(manifest: dict, machine: str) -> tuple[dict | None, str | None]:
-    displays = manifest.get("displays")
-    if not isinstance(displays, dict):
-        return None, "Manifest does not contain a valid 'displays' object."
-
-    job = displays.get(machine)
-    if not isinstance(job, dict):
-        return None, f"No job found for machine '{machine}'."
-
-    pdf_url = str(job.get("pdf_url", "")).strip()
-    if not pdf_url:
-        return None, f"Machine '{machine}' has no pdf_url in manifest."
-
-    return job, None
-
-
-def render_pdf(pdf_url: str, version: str | int | None) -> None:
-    safe_url = cache_busted(pdf_url, version)
-    html = f"""
-    <style>
-      html, body {{
-        margin: 0;
-        padding: 0;
-        background: #111;
-        overflow: hidden;
-      }}
-      .frame-wrap {{
-        position: fixed;
-        inset: 0;
-      }}
-      iframe {{
-        width: 100vw;
-        height: 100vh;
-        border: none;
-        background: white;
-      }}
-    </style>
-    <div class="frame-wrap">
-      <iframe src="{safe_url}"></iframe>
-    </div>
-    """
-    components.html(html, height=1080, scrolling=False)
-
-
-st.set_page_config(page_title=APP_TITLE, layout="wide")
-
-manifest_url = get_manifest_url()
-machine = get_machine()
-refresh_seconds = get_refresh_seconds()
-
-st.markdown(
-    """
-    <style>
-      [data-testid="stHeader"], [data-testid="stToolbar"], #MainMenu, footer {
-        visibility: hidden;
-        height: 0;
-      }
-      .block-container {
-        padding: 0.2rem 0.4rem 0.4rem 0.4rem;
-        max-width: 100%;
-      }
-      .small-muted {
-        color: #9aa0a6;
-        font-size: 0.85rem;
-      }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-if not manifest_url:
-    st.title(APP_TITLE)
+def render_missing_config():
+    st.title("Slitting Receiver")
     st.error("Missing manifest URL.")
     st.markdown(
         """
@@ -144,55 +54,76 @@ Add one of these:
 
 **Option 1 — Streamlit secret**
 ```toml
-MANIFEST_URL = "https://your-domain.example.com/receiver-manifest.json"
+MANIFEST_URL = "https://raw.githubusercontent.com/YOUR-USER/YOUR-REPO/main/manifest.json"
 ```
 
 **Option 2 — URL parameter**
 ```text
-?machine=M1&manifest_url=https://your-domain.example.com/receiver-manifest.json
+?machine=M1&manifest_url=https://raw.githubusercontent.com/YOUR-USER/YOUR-REPO/main/manifest.json
 ```
-        """
+"""
     )
     st.stop()
 
-manifest, manifest_error = fetch_manifest(manifest_url)
 
-if manifest_error:
-    st.title(APP_TITLE)
-    st.markdown(f"### Receiver: {machine}")
-    st.error(manifest_error)
-    st.markdown(
-        f"<div class='small-muted'>Checked at {now_utc_iso()} · refresh every {refresh_seconds}s</div>",
-        unsafe_allow_html=True,
-    )
-    time.sleep(refresh_seconds)
-    st.rerun()
+manifest_url = get_manifest_url()
+machine_id = get_machine_id()
 
-job, job_error = resolve_job(manifest, machine)
+if not manifest_url:
+    render_missing_config()
 
-if job_error:
-    st.title(APP_TITLE)
-    st.markdown(f"### Receiver: {machine}")
-    st.warning(job_error)
-    st.markdown(
-        f"<div class='small-muted'>Manifest OK · checked at {now_utc_iso()} · refresh every {refresh_seconds}s</div>",
-        unsafe_allow_html=True,
-    )
-    time.sleep(refresh_seconds)
-    st.rerun()
+refresh_seconds = st.sidebar.number_input("Refresh every (seconds)", min_value=1, max_value=60, value=DEFAULT_REFRESH_SECONDS)
+st.sidebar.write(f"Machine: **{machine_id}**")
+st.sidebar.write(f"Manifest URL: `{manifest_url}`")
 
-pdf_url = str(job.get("pdf_url")).strip()
-version = job.get("version") or manifest.get("version")
-render_pdf(pdf_url, version)
+placeholder = st.empty()
 
-col1, col2, col3, col4 = st.columns([1.1, 1.2, 1.4, 2.3])
-with col1:
-    st.caption(f"Machine: {machine}")
-with col2:
-    st.caption(f"Job: {job.get('job_code', '-')}")
-with col3:
-    st.caption(f"Version: {version}")
-with col4:
-    st.caption(f"Sent at: {job.get('sent_at', '-')}")
+try:
+    manifest = fetch_manifest(manifest_url)
+except Exception as e:
+    st.title("Slitting Receiver")
+    st.error(f"Could not load manifest: {e}")
+    st.stop()
+
+displays = manifest.get("displays", {})
+display = displays.get(machine_id)
+
+st.title(f"Receiver — {machine_id}")
+
+if not display:
+    st.warning(f"No display entry found in manifest for machine '{machine_id}'.")
+    st.json(manifest)
+    st.stop()
+
+pdf_url = display.get("pdf_url")
+job_code = display.get("job_code", "")
+version = display.get("version", "")
+sent_at = display.get("sent_at", "")
+note = display.get("note", "")
+filename = display.get("filename", "document.pdf")
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Machine", machine_id)
+c2.metric("Version", str(version))
+c3.metric("Job", str(job_code))
+c4.metric("Sent at", sent_at or "-")
+
+if note:
+    st.info(note)
+
+if not pdf_url:
+    st.warning("This machine currently has no PDF URL assigned.")
+    st.stop()
+
+pdf_viewer_url = pdf_url
+if "?" in pdf_viewer_url:
+    pdf_viewer_url = f"{pdf_viewer_url}&v={quote(str(version))}"
+else:
+    pdf_viewer_url = f"{pdf_viewer_url}?v={quote(str(version))}"
+
+st.components.v1.iframe(pdf_viewer_url, height=900, scrolling=True)
+st.link_button("Open PDF in browser", pdf_viewer_url)
+
+st.caption("This page auto-refreshes.")
 time.sleep(refresh_seconds)
 st.rerun()
