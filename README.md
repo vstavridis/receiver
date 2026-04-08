@@ -80,3 +80,8 @@ When the user clicks **Send to Machine** in the main app:
 - increase the `version`
 
 Using a new version or timestamp is important to avoid browser caching.
+
+
+## New in v2
+
+You can now use either a Streamlit secret or a `manifest_url` URL parameter.
