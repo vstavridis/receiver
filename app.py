@@ -1,7 +1,6 @@
 import base64
 import json
 import html
-import time
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -15,6 +14,9 @@ except Exception:
     st_autorefresh = None
 
 st.set_page_config(page_title="Slitting Receiver", layout="wide")
+
+
+READ_INTERVAL_MS = 3000
 
 
 def qp(name, default=None):
@@ -91,36 +93,22 @@ def _normalize_store(store):
     return store
 
 
-def _queue_url():
-    url = qp("queue_url")
-    if url:
-        return str(url)
-    url = _get_secret("QUEUE_URL")
-    if url:
-        return url
+def _fetch_store_read():
+    token = _get_secret("DISPLAY_GITHUB_TOKEN")
     repo = _get_secret("DISPLAY_GITHUB_REPO")
     branch = _get_secret("DISPLAY_GITHUB_BRANCH", "main")
-    if repo:
-        return f"https://raw.githubusercontent.com/{repo}/{branch}/queue.json"
-    raise RuntimeError("Missing queue source")
+    queue_path = _get_secret("QUEUE_PATH", "queue.json")
+    if not token or not repo:
+        raise RuntimeError("Receiver app is missing DISPLAY_GITHUB_TOKEN and/or DISPLAY_GITHUB_REPO secrets")
 
-
-def _fetch_store_read():
-    url = _queue_url()
-    sep = "&" if "?" in url else "?"
-    fresh_url = f"{url}{sep}t={int(time.time() * 1000)}"
-    r = requests.get(
-        fresh_url,
-        timeout=10,
-        headers={
-            "Cache-Control": "no-cache, no-store, max-age=0",
-            "Pragma": "no-cache",
-        },
-    )
+    r = requests.get(_api_url(repo, queue_path), headers=_headers(token), params={"ref": branch}, timeout=12)
     if r.status_code == 404:
         return _default_store()
-    r.raise_for_status()
-    return _normalize_store(r.json())
+    if r.status_code >= 400:
+        raise RuntimeError(f"GitHub read failed ({r.status_code}): {r.text}")
+    payload = r.json()
+    decoded = base64.b64decode(payload["content"]).decode("utf-8")
+    return _normalize_store(json.loads(decoded))
 
 
 def _fetch_store_write_context():
@@ -172,6 +160,21 @@ def complete_current_job(machine_id: str):
     store["version"] = int(store.get("version", 0)) + 1
     _put_store(store, repo, branch, token, queue_path, f"Complete job {job.get('queue_id', '')} on {machine_id}")
     return True, job.get("payload", {}).get("job_code", "")
+
+
+def prioritize_job(machine_id: str, queue_id: str):
+    store, repo, branch, token, queue_path = _fetch_store_write_context()
+    queue = store["machines"][machine_id]["queue"]
+    idx = next((i for i, item in enumerate(queue) if item.get("queue_id") == queue_id), None)
+    if idx is None:
+        return False, "Job not found"
+    if idx == 0:
+        return True, "Already active"
+    item = queue.pop(idx)
+    queue.insert(0, item)
+    store["version"] = int(store.get("version", 0)) + 1
+    _put_store(store, repo, branch, token, queue_path, f"Prioritize job {queue_id} on {machine_id}")
+    return True, item.get("payload", {}).get("job_code", "")
 
 
 def fmt_dt(value):
@@ -365,6 +368,9 @@ def _merged_widths(rows):
 
 
 def _preview_sections(payload):
+    sections = payload.get("setup_preview")
+    if isinstance(sections, list) and sections:
+        return sections
     machine = payload.get("machine", "M1")
     thickness = payload.get("thickness", "0.5")
     merged = _merged_widths(payload.get("rows", []))
@@ -373,7 +379,9 @@ def _preview_sections(payload):
         width = str(item["width"])
         qty = int(item["qty"])
         rules = get_rules(machine, thickness)
-        visual_male, visual_female = _build_visual_tokens(machine, width, rules, [], [])
+        male_tokens = []
+        female_tokens = []
+        visual_male, visual_female = _build_visual_tokens(machine, width, rules, male_tokens, female_tokens)
         out.append({
             "width": width,
             "qty": qty,
@@ -404,13 +412,12 @@ def _render_setup_preview_one(section):
     st.markdown(_render_token_strip_html(section.get("female_tokens", []), total_label="Total", machine=machine), unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-
 machine_id = get_machine_id()
 play_sound = sound_enabled()
 fullscreen = fullscreen_enabled()
 
 if st_autorefresh is not None:
-    st_autorefresh(interval=1200, key=f"receiver_refresh_{machine_id}")
+    st_autorefresh(interval=READ_INTERVAL_MS, key=f"receiver_refresh_{machine_id}")
 
 if fullscreen:
     st.markdown("""
@@ -418,9 +425,10 @@ if fullscreen:
     header[data-testid="stHeader"] {display:none !important;}
     div[data-testid="stToolbar"] {display:none !important;}
     [data-testid="collapsedControl"] {display:none !important;}
-    .block-container {padding-top:.35rem !important; padding-bottom:1rem !important; max-width: 100% !important;}
-    .receiver-sticky-top{position:sticky;top:0;z-index:100;background:rgba(4,8,18,.96);backdrop-filter:blur(8px);padding-top:8px;padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid rgba(255,255,255,.08)}
+    .block-container {padding-top:.2rem !important; padding-bottom:1rem !important; max-width:100% !important;}
+    .receiver-sticky-top{position:sticky;top:0;z-index:100;background:transparent;padding-top:6px;padding-bottom:8px;margin-bottom:8px}
     .receiver-main-title{text-align:center;font-size:2rem;font-weight:700;margin:0}
+    .menu-wrap{display:flex;justify-content:center;align-items:center;margin-top:8px}
     .hero{padding:18px 22px;border-radius:18px;background:linear-gradient(135deg, rgba(239,68,68,.22), rgba(127,29,29,.24));border:1px solid rgba(255,255,255,.10);margin-bottom:16px}
     .small-muted{opacity:.75;font-size:.9rem}
     .setup-preview-card{background:rgba(255,255,255,.03);border:1px solid rgba(148,163,184,.18);border-radius:16px;padding:18px 18px;margin:10px 0}
@@ -435,11 +443,17 @@ if fullscreen:
     .setup-token .stack-line{display:block;font-size:15px;line-height:1.05}
     .setup-total{font-size:14px;color:#cbd5e1;margin-top:2px}
     .setup-empty{font-size:12px;color:#94a3b8;padding:4px 0 8px 0}
-    div[data-baseweb="tab-list"]{justify-content:center}
+    div[data-baseweb="tab-list"]{justify-content:center;min-width:520px}
+    div[data-baseweb="tab"]{flex:1;justify-content:center}
     </style>
     """, unsafe_allow_html=True)
 
-store = _fetch_store_read()
+try:
+    store = _fetch_store_read()
+except Exception as e:
+    st.error(f"Could not load queue: {e}")
+    st.stop()
+
 machine_store = store["machines"].get(machine_id, {"queue": [], "history": []})
 queue = machine_store.get("queue", [])
 history = machine_store.get("history", [])
@@ -471,15 +485,9 @@ if beep_now:
     """, height=0)
 
 st.markdown(f"<div class='receiver-sticky-top'><div class='receiver-main-title'>Receiver — {html.escape(machine_id)}</div></div>", unsafe_allow_html=True)
-
-center_col = st.columns([1, 2, 1])[1]
+center_col = st.columns([1, 2.6, 1])[1]
 with center_col:
     mode = st.segmented_control("Menu", ["Active Job", "Queue", "History"], default="Active Job", label_visibility="collapsed")
-
-top1, top2, top3 = st.columns(3)
-top1.metric("Machine", machine_id)
-top2.metric("Queue", len(queue))
-top3.metric("History", len(history))
 
 if mode == "Active Job":
     if not active_job:
@@ -487,64 +495,71 @@ if mode == "Active Job":
     else:
         payload = active_job.get("payload", {})
         summary = payload.get("summary", {})
-        st.markdown(
-            f"""
-            <div class="hero">
-                <div class="small-muted">Current active job</div>
-                <h1 style="margin:.2rem 0 .5rem 0;">{html.escape(str(payload.get("job_code", "-")))}</h1>
-                <div class="small-muted">Coil {html.escape(str(payload.get("coil_number", "-")))} · Material {html.escape(str(payload.get("material", "-")))} · Thickness {html.escape(str(payload.get("thickness", "-")))}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        a1, a2, a3, a4, a5 = st.columns(5)
-        a1.metric("Cut Plan", f'{payload.get("cut_plan", 1)}x')
-        a2.metric("Coil Width", payload.get("coil_width", "-"))
-        a3.metric("Coil Kg", payload.get("coil_kg", "-"))
-        a4.metric("Slitting Kg", summary.get("slitting_kg", payload.get("slitting_kg", "-")))
-        a5.metric("Remaining", summary.get("remaining", "-"))
-
-        b1, b2, b3, b4 = st.columns(4)
-        b1.metric("Waste Kg", summary.get("waste_kg", "-"))
-        b2.metric("Waste %", summary.get("waste_pct", "-"))
-        b3.metric("Sent At", fmt_dt(active_job.get("sent_at")))
-        b4.metric("Next Jobs", max(len(queue) - 1, 0))
-
-        st.subheader("Job Details")
-        st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
-
         sections = _preview_sections(payload)
-        active_qid = active_job.get("queue_id", "")
-        state_key = f"preview_idx_{machine_id}"
-        if st.session_state.get("preview_active_qid") != active_qid:
-            st.session_state["preview_active_qid"] = active_qid
-            st.session_state[state_key] = 0
-        preview_idx = st.session_state.get(state_key, 0)
-        preview_idx = max(0, min(preview_idx, max(len(sections) - 1, 0)))
 
-        if sections:
-            st.subheader("Setup Preview")
-            nav_cols = st.columns([1, 16, 1])
-            if nav_cols[0].button("◀", use_container_width=True, disabled=preview_idx <= 0):
-                st.session_state[state_key] = max(0, preview_idx - 1)
-                st.rerun()
-            with nav_cols[1]:
-                _render_setup_preview_one(sections[preview_idx])
-            if nav_cols[2].button("▶", use_container_width=True, disabled=preview_idx >= len(sections) - 1):
-                st.session_state[state_key] = min(len(sections) - 1, preview_idx + 1)
-                st.rerun()
+        active_qid = active_job.get("queue_id", "")
+        page_key = f"active_page_{machine_id}"
+        if st.session_state.get("active_page_qid") != active_qid:
+            st.session_state["active_page_qid"] = active_qid
+            st.session_state[page_key] = 0
+        max_page = len(sections)
+        current_page = st.session_state.get(page_key, 0)
+        current_page = max(0, min(current_page, max_page))
+
+        nav_cols = st.columns([1, 18, 1], vertical_alignment="center")
+        if nav_cols[0].button("◀", use_container_width=True, disabled=current_page <= 0):
+            st.session_state[page_key] = max(0, current_page - 1)
+            st.rerun()
+
+        with nav_cols[1]:
+            if current_page == 0:
+                st.markdown(
+                    f"""
+                    <div class="hero">
+                        <div class="small-muted">Current active job</div>
+                        <h1 style="margin:.2rem 0 .5rem 0;">{html.escape(str(payload.get("job_code", "-")))}</h1>
+                        <div class="small-muted">Coil {html.escape(str(payload.get("coil_number", "-")))} · Material {html.escape(str(payload.get("material", "-")))} · Thickness {html.escape(str(payload.get("thickness", "-")))}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                a1, a2, a3, a4, a5 = st.columns(5)
+                a1.metric("Cut Plan", f'{payload.get("cut_plan", 1)}x')
+                a2.metric("Coil Width", payload.get("coil_width", "-"))
+                a3.metric("Coil Kg", payload.get("coil_kg", "-"))
+                a4.metric("Slitting Kg", summary.get("slitting_kg", payload.get("slitting_kg", "-")))
+                a5.metric("Remaining", summary.get("remaining", "-"))
+
+                b1, b2, b3, b4 = st.columns(4)
+                b1.metric("Waste Kg", summary.get("waste_kg", "-"))
+                b2.metric("Waste %", summary.get("waste_pct", "-"))
+                b3.metric("Sent At", fmt_dt(active_job.get("sent_at")))
+                b4.metric("Next Jobs", max(len(queue) - 1, 0))
+
+                st.subheader("Job Details")
+                st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
+            else:
+                st.subheader("Setup Preview")
+                _render_setup_preview_one(sections[current_page - 1])
+
+        if nav_cols[2].button("▶", use_container_width=True, disabled=current_page >= max_page):
+            st.session_state[page_key] = min(max_page, current_page + 1)
+            st.rerun()
 
         if st.session_state.get("confirm_complete_queue_id") == active_job.get("queue_id"):
             st.warning(f"Complete job {payload.get('job_code', '-') }?")
             c1, c2, c3 = st.columns([1, 1, 4])
             if c1.button("Yes, Complete", type="primary", use_container_width=True):
-                ok, job_code = complete_current_job(machine_id)
-                st.session_state["confirm_complete_queue_id"] = None
-                if ok:
-                    st.success(f"Completed {job_code}")
-                    st.rerun()
-                else:
-                    st.warning(job_code)
+                try:
+                    ok, job_code = complete_current_job(machine_id)
+                    st.session_state["confirm_complete_queue_id"] = None
+                    if ok:
+                        st.success(f"Completed {job_code}")
+                        st.rerun()
+                    else:
+                        st.warning(job_code)
+                except Exception as e:
+                    st.error(f"Complete failed: {e}")
             if c2.button("Cancel", use_container_width=True):
                 st.session_state["confirm_complete_queue_id"] = None
                 st.rerun()
@@ -556,32 +571,92 @@ if mode == "Active Job":
                     st.session_state["confirm_complete_queue_id"] = active_job.get("queue_id")
                     st.rerun()
 
-elif mode == "Queue":
-    st.info("This rate-limit fix bundle keeps the receiver stable. Use your previous queue dialog version after this fix is deployed if you still want queue dialog actions.")
-    st.dataframe([
-        {
-            "Job Code": item.get("payload", {}).get("job_code", ""),
-            "Coil": item.get("payload", {}).get("coil_number", ""),
-            "Thickness": item.get("payload", {}).get("thickness", ""),
-            "Material": item.get("payload", {}).get("material", ""),
-            "Sent At": fmt_dt(item.get("sent_at")),
-        }
-        for item in queue
-    ], use_container_width=True, hide_index=True)
 
-else:
-    rows = [
-        {
-            "Job Code": item.get("payload", {}).get("job_code", ""),
-            "Coil": item.get("payload", {}).get("coil_number", ""),
-            "Thickness": item.get("payload", {}).get("thickness", ""),
-            "Material": item.get("payload", {}).get("material", ""),
-            "Completed At": fmt_dt(item.get("completed_at")),
-            "Sent At": fmt_dt(item.get("sent_at")),
-        }
-        for item in history
-    ]
-    if rows:
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+def _find_queue_job(qid):
+    for item in queue:
+        if item.get("queue_id") == qid:
+            return item
+    return None
+
+
+if mode == "Queue":
+    st.subheader("Orders in Queue")
+    if not queue:
+        st.info("Queue is empty.")
     else:
+        header = st.columns([1.0, 1.4, 1.2, 0.8, 1.0, 1.0])
+        for col, title in zip(header, ["Open", "Job Code", "Coil", "Thick", "Material", "Sent"]):
+            col.caption(title)
+        for item in queue:
+            payload = item.get("payload", {})
+            cols = st.columns([1.0, 1.4, 1.2, 0.8, 1.0, 1.0])
+            if cols[0].button("Open", key=f"open_q_{item.get('queue_id')}"):
+                st.session_state["queue_dialog_id"] = item.get("queue_id")
+            cols[1].write(payload.get("job_code", ""))
+            cols[2].write(payload.get("coil_number", ""))
+            cols[3].write(payload.get("thickness", ""))
+            cols[4].write(payload.get("material", ""))
+            cols[5].write(fmt_dt(item.get("sent_at")))
+
+        if st.session_state.get("queue_dialog_id"):
+            job = _find_queue_job(st.session_state["queue_dialog_id"])
+            if job and hasattr(st, "dialog"):
+                payload = job.get("payload", {})
+                @st.dialog("Queue Job Details", width="large")
+                def _queue_job_dialog():
+                    st.write({
+                        "job_code": payload.get("job_code", ""),
+                        "coil_number": payload.get("coil_number", ""),
+                        "thickness": payload.get("thickness", ""),
+                        "material": payload.get("material", ""),
+                        "coil_width": payload.get("coil_width", ""),
+                        "sent_at": fmt_dt(job.get("sent_at")),
+                    })
+                    st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
+                    sections = _preview_sections(payload)
+                    if sections:
+                        qstate = f"queue_preview_idx_{job.get('queue_id')}"
+                        qidx = st.session_state.get(qstate, 0)
+                        qidx = max(0, min(qidx, len(sections) - 1))
+                        nav_cols = st.columns([1, 16, 1])
+                        if nav_cols[0].button("◀", key=f"dlg_prev_{job.get('queue_id')}", use_container_width=True, disabled=qidx <= 0):
+                            st.session_state[qstate] = max(0, qidx - 1)
+                            st.rerun()
+                        with nav_cols[1]:
+                            _render_setup_preview_one(sections[qidx])
+                        if nav_cols[2].button("▶", key=f"dlg_next_{job.get('queue_id')}", use_container_width=True, disabled=qidx >= len(sections) - 1):
+                            st.session_state[qstate] = min(len(sections) - 1, qidx + 1)
+                            st.rerun()
+                    c1, c2 = st.columns(2)
+                    if c1.button("Priority", type="primary", use_container_width=True):
+                        ok, msg = prioritize_job(machine_id, job.get("queue_id", ""))
+                        st.session_state["queue_dialog_id"] = None
+                        if ok:
+                            st.success(f"Priority set for {msg}")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                    if c2.button("Close", use_container_width=True):
+                        st.session_state["queue_dialog_id"] = None
+                        st.rerun()
+                _queue_job_dialog()
+            elif not job:
+                st.session_state["queue_dialog_id"] = None
+
+if mode == "History":
+    st.subheader("Completed Jobs History")
+    if not history:
         st.info("No history yet.")
+    else:
+        rows = []
+        for item in history:
+            payload = item.get("payload", {})
+            rows.append({
+                "Job Code": payload.get("job_code", ""),
+                "Coil": payload.get("coil_number", ""),
+                "Thickness": payload.get("thickness", ""),
+                "Material": payload.get("material", ""),
+                "Completed At": fmt_dt(item.get("completed_at")),
+                "Sent At": fmt_dt(item.get("sent_at")),
+            })
+        st.dataframe(rows, use_container_width=True, hide_index=True)
