@@ -1,4 +1,3 @@
-
 import base64
 import json
 from datetime import datetime, timezone
@@ -108,16 +107,29 @@ def _default_store():
     }
 
 
+def _normalize_machine(value):
+    if isinstance(value, dict):
+        value.setdefault("queue", [])
+        value.setdefault("history", [])
+        if not isinstance(value["queue"], list):
+            value["queue"] = []
+        if not isinstance(value["history"], list):
+            value["history"] = []
+        return value
+    if isinstance(value, list):
+        return {"queue": value, "history": []}
+    return {"queue": [], "history": []}
+
+
 def _normalize_store(store):
     if not isinstance(store, dict):
         store = _default_store()
     store.setdefault("version", 0)
     store.setdefault("machines", {})
+    if not isinstance(store["machines"], dict):
+        store["machines"] = {}
     for mid in ("M1", "M2"):
-        store["machines"].setdefault(mid, {})
-        machine = store["machines"][mid]
-        machine.setdefault("queue", [])
-        machine.setdefault("history", [])
+        store["machines"][mid] = _normalize_machine(store["machines"].get(mid))
     return store
 
 
@@ -137,7 +149,6 @@ def _load_store_for_write():
 
 def complete_current_job(machine_id: str):
     store, repo, branch, token, queue_path = _load_store_for_write()
-    store = _normalize_store(store)
     queue = store["machines"][machine_id]["queue"]
     history = store["machines"][machine_id]["history"]
     if not queue:
@@ -184,8 +195,7 @@ if st_autorefresh is not None:
     st_autorefresh(interval=2000, key="receiver_refresh")
 
 if fullscreen:
-    st.markdown(
-        '''
+    st.markdown("""
         <style>
         header[data-testid="stHeader"] {display:none !important;}
         div[data-testid="stToolbar"] {display:none !important;}
@@ -198,31 +208,18 @@ if fullscreen:
             border: 1px solid rgba(255,255,255,0.10);
             margin-bottom: 16px;
         }
-        .panel {
-            padding: 14px 16px;
-            border-radius: 16px;
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.08);
-            margin-bottom: 14px;
-        }
-        .small-muted {
-            opacity: 0.75;
-            font-size: 0.9rem;
-        }
+        .small-muted { opacity: 0.75; font-size: 0.9rem; }
         </style>
-        ''',
-        unsafe_allow_html=True,
-    )
+    """, unsafe_allow_html=True)
 
 st.title(f"Receiver Queue — {machine_id}")
 
 try:
-    store = fetch_queue(queue_url)
+    store = _normalize_store(fetch_queue(queue_url))
 except Exception as e:
     st.error(f"Could not load queue: {e}")
     st.stop()
 
-store = _normalize_store(store)
 machine_store = store["machines"].get(machine_id, {"queue": [], "history": []})
 queue = machine_store.get("queue", [])
 history = machine_store.get("history", [])
@@ -234,8 +231,7 @@ st.session_state["last_queue_key"] = current_key
 beep_now = play_sound and previous_key not in (None, current_key)
 
 if beep_now:
-    components.html(
-        '''
+    components.html("""
         <script>
         try {
           const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -252,9 +248,7 @@ if beep_now:
           o.stop(ctx.currentTime + 0.42);
         } catch(e) {}
         </script>
-        ''',
-        height=0,
-    )
+    """, height=0)
 
 top1, top2, top3, top4 = st.columns(4)
 top1.metric("Machine", machine_id)
@@ -271,16 +265,13 @@ if mode == "Active Job":
         payload = active_job.get("payload", {})
         summary = payload.get("summary", {})
 
-        st.markdown(
-            f'''
+        st.markdown(f"""
             <div class="hero">
                 <div class="small-muted">Current active job</div>
                 <h1 style="margin: 0.2rem 0 0.5rem 0;">{payload.get("job_code", "-")}</h1>
                 <div class="small-muted">Coil {payload.get("coil_number", "-")} · Material {payload.get("material", "-")} · Thickness {payload.get("thickness", "-")}</div>
             </div>
-            ''',
-            unsafe_allow_html=True,
-        )
+        """, unsafe_allow_html=True)
 
         a1, a2, a3, a4, a5 = st.columns(5)
         a1.metric("Cut Plan", f'{payload.get("cut_plan", 1)}x')
@@ -319,17 +310,15 @@ elif mode == "Queue":
         rows = []
         for idx, item in enumerate(queue, start=1):
             payload = item.get("payload", {})
-            rows.append(
-                {
-                    "Position": idx,
-                    "Job Code": payload.get("job_code", ""),
-                    "Coil": payload.get("coil_number", ""),
-                    "Thickness": payload.get("thickness", ""),
-                    "Material": payload.get("material", ""),
-                    "Coil Width": payload.get("coil_width", ""),
-                    "Sent At": fmt_dt(item.get("sent_at")),
-                }
-            )
+            rows.append({
+                "Position": idx,
+                "Job Code": payload.get("job_code", ""),
+                "Coil": payload.get("coil_number", ""),
+                "Thickness": payload.get("thickness", ""),
+                "Material": payload.get("material", ""),
+                "Coil Width": payload.get("coil_width", ""),
+                "Sent At": fmt_dt(item.get("sent_at")),
+            })
         st.dataframe(rows, use_container_width=True, hide_index=True)
 
 else:
@@ -340,14 +329,12 @@ else:
         rows = []
         for item in history:
             payload = item.get("payload", {})
-            rows.append(
-                {
-                    "Job Code": payload.get("job_code", ""),
-                    "Coil": payload.get("coil_number", ""),
-                    "Thickness": payload.get("thickness", ""),
-                    "Material": payload.get("material", ""),
-                    "Completed At": fmt_dt(item.get("completed_at")),
-                    "Sent At": fmt_dt(item.get("sent_at")),
-                }
-            )
+            rows.append({
+                "Job Code": payload.get("job_code", ""),
+                "Coil": payload.get("coil_number", ""),
+                "Thickness": payload.get("thickness", ""),
+                "Material": payload.get("material", ""),
+                "Completed At": fmt_dt(item.get("completed_at")),
+                "Sent At": fmt_dt(item.get("sent_at")),
+            })
         st.dataframe(rows, use_container_width=True, hide_index=True)
