@@ -1,6 +1,7 @@
 import base64
 import json
 import html
+import time
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -13,7 +14,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-st.set_page_config(page_title="Slitting Receiver Queue", layout="wide")
+st.set_page_config(page_title="Slitting Receiver", layout="wide")
 
 
 def qp(name, default=None):
@@ -90,28 +91,34 @@ def _normalize_store(store):
     return store
 
 
-def _fetch_store_read():
-    token = _get_secret("DISPLAY_GITHUB_TOKEN")
+def _queue_url():
+    url = qp("queue_url")
+    if url:
+        return str(url)
+    url = _get_secret("QUEUE_URL")
+    if url:
+        return url
     repo = _get_secret("DISPLAY_GITHUB_REPO")
     branch = _get_secret("DISPLAY_GITHUB_BRANCH", "main")
-    queue_path = _get_secret("QUEUE_PATH", "queue.json")
+    if repo:
+        return f"https://raw.githubusercontent.com/{repo}/{branch}/queue.json"
+    raise RuntimeError("Missing queue source")
 
-    if token and repo:
-        r = requests.get(_api_url(repo, queue_path), headers=_headers(token), params={"ref": branch}, timeout=20)
-        if r.status_code == 404:
-            return _default_store()
-        if r.status_code >= 400:
-            raise RuntimeError(f"GitHub read failed ({r.status_code}): {r.text}")
-        payload = r.json()
-        decoded = base64.b64decode(payload["content"]).decode("utf-8")
-        return _normalize_store(json.loads(decoded))
 
-    queue_url = qp("queue_url")
-    if not queue_url:
-        queue_url = _get_secret("QUEUE_URL")
-    if not queue_url:
-        raise RuntimeError("Missing queue source")
-    r = requests.get(queue_url, timeout=20, headers={"Cache-Control": "no-cache, no-store, max-age=0"})
+def _fetch_store_read():
+    url = _queue_url()
+    sep = "&" if "?" in url else "?"
+    fresh_url = f"{url}{sep}t={int(time.time() * 1000)}"
+    r = requests.get(
+        fresh_url,
+        timeout=10,
+        headers={
+            "Cache-Control": "no-cache, no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+    if r.status_code == 404:
+        return _default_store()
     r.raise_for_status()
     return _normalize_store(r.json())
 
@@ -123,7 +130,7 @@ def _fetch_store_write_context():
     queue_path = _get_secret("QUEUE_PATH", "queue.json")
     if not token or not repo:
         raise RuntimeError("Receiver app needs DISPLAY_GITHUB_TOKEN and DISPLAY_GITHUB_REPO secrets for write actions")
-    r = requests.get(_api_url(repo, queue_path), headers=_headers(token), params={"ref": branch}, timeout=20)
+    r = requests.get(_api_url(repo, queue_path), headers=_headers(token), params={"ref": branch}, timeout=12)
     if r.status_code == 404:
         store = _default_store()
     else:
@@ -136,11 +143,10 @@ def _fetch_store_write_context():
 
 
 def _put_store(store, repo, branch, token, queue_path, message):
-    existing = requests.get(_api_url(repo, queue_path), headers=_headers(token), params={"ref": branch}, timeout=20)
+    existing = requests.get(_api_url(repo, queue_path), headers=_headers(token), params={"ref": branch}, timeout=12)
     sha = None
     if existing.status_code == 200:
         sha = existing.json()["sha"]
-
     payload = {
         "message": message,
         "branch": branch,
@@ -148,8 +154,7 @@ def _put_store(store, repo, branch, token, queue_path, message):
     }
     if sha:
         payload["sha"] = sha
-
-    r = requests.put(_api_url(repo, queue_path), headers=_headers(token), json=payload, timeout=30)
+    r = requests.put(_api_url(repo, queue_path), headers=_headers(token), json=payload, timeout=20)
     if r.status_code >= 400:
         raise RuntimeError(f"GitHub write failed ({r.status_code}): {r.text}")
 
@@ -167,21 +172,6 @@ def complete_current_job(machine_id: str):
     store["version"] = int(store.get("version", 0)) + 1
     _put_store(store, repo, branch, token, queue_path, f"Complete job {job.get('queue_id', '')} on {machine_id}")
     return True, job.get("payload", {}).get("job_code", "")
-
-
-def prioritize_job(machine_id: str, queue_id: str):
-    store, repo, branch, token, queue_path = _fetch_store_write_context()
-    queue = store["machines"][machine_id]["queue"]
-    idx = next((i for i, item in enumerate(queue) if item.get("queue_id") == queue_id), None)
-    if idx is None:
-        return False, "Job not found"
-    if idx == 0:
-        return True, "Already active"
-    item = queue.pop(idx)
-    queue.insert(0, item)
-    store["version"] = int(store.get("version", 0)) + 1
-    _put_store(store, repo, branch, token, queue_path, f"Prioritize job {queue_id} on {machine_id}")
-    return True, item.get("payload", {}).get("job_code", "")
 
 
 def fmt_dt(value):
@@ -285,30 +275,24 @@ def _build_visual_tokens(machine, width, rules, male_tokens, female_tokens):
 
 
 def _token_min_width(token_type):
-    return {"knife": 28.0, "rubber": 28.0, "spacer": 28.0, "tsonta": 58.0}.get(token_type, 28.0)
+    return {"knife": 40.0, "rubber": 40.0, "spacer": 40.0, "tsonta": 80.0}.get(token_type, 40.0)
 
 
-def _token_raw_width(meta, px_per_mm=5.0):
+def _token_raw_width(meta, px_per_mm=8.5):
     mm_for_visual = 6.0 if 0 < meta["mm"] < 6 else meta["mm"]
     min_width = _token_min_width(meta["type"])
     return max(min_width, mm_for_visual * px_per_mm if mm_for_visual > 0 else min_width)
 
 
-def _fit_token_widths(tokens, width_available, gap=6.0, px_per_mm=5.0):
+def _fit_token_widths(tokens, width_available, gap=10.0, px_per_mm=8.5):
     if not tokens:
         return []
     metas = [_parse_token(token) for token in tokens]
     mins = [_token_min_width(meta["type"]) for meta in metas]
     raws = [_token_raw_width(meta, px_per_mm=px_per_mm) for meta in metas]
     count = len(tokens)
-    if count > 14:
-        gap = 3.0
-    elif count > 8:
-        gap = 4.0
-    else:
-        gap = max(2.0, gap)
     gap_total = gap * max(count - 1, 0)
-    usable = max(width_available - gap_total, count * 12.0)
+    usable = max(width_available - gap_total, count * 20.0)
     min_total = sum(mins)
     raw_total = sum(raws)
     if raw_total <= usable:
@@ -319,7 +303,7 @@ def _fit_token_widths(tokens, width_available, gap=6.0, px_per_mm=5.0):
         widths = [mins[i] + (raws[i] - mins[i]) * ratio for i in range(count)]
     else:
         forced = usable / max(count, 1)
-        widths = [max(20.0, forced) for _ in range(count)]
+        widths = [max(32.0, forced) for _ in range(count)]
     return [{"meta": metas[i], "width": widths[i], "gap": gap} for i in range(count)]
 
 
@@ -341,11 +325,6 @@ def _render_token_chip_html(token, width, machine="M1"):
     palette = _html_token_palette().get(meta["type"], _html_token_palette()["spacer"])
     short_label = html.escape(_token_short_label(meta["type"]))
     value = html.escape(str(meta["label"]))
-    classes = ["setup-token", f"token-{meta['type']}"]
-    if width <= 42:
-        classes.append("tight")
-    if width <= 28:
-        classes.append("ultra-tight")
     if meta["type"] == "tsonta":
         values = [html.escape(part) for part in str(meta["label"]).replace("+", " ").split() if part]
         if machine == "M1":
@@ -356,18 +335,17 @@ def _render_token_chip_html(token, width, machine="M1"):
     else:
         value_html = value
     return (
-        f"<span class='{' '.join(classes)}' style='width:{max(20, int(round(width)))}px;"
-        f"background:{palette['fill']};border-color:{palette['stroke']};color:{palette['text']}'>"
+        f"<span class='setup-token' style='width:{max(32, int(round(width)))}px;background:{palette['fill']};border-color:{palette['stroke']};color:{palette['text']}'>"
         f"<span class='token-label' style='color:{palette['tag']}'>{short_label}</span>"
         f"<span class='token-value'>{value_html}</span>"
         f"</span>"
     )
 
 
-def _render_token_strip_html(tokens, width_available=880, total_label=None, machine="M1"):
+def _render_token_strip_html(tokens, width_available=1200, total_label=None, machine="M1"):
     if not tokens:
         return "<div class='setup-empty'>No setup yet</div>"
-    layout = _fit_token_widths(tokens, width_available, gap=6.0, px_per_mm=5.5)
+    layout = _fit_token_widths(tokens, width_available, gap=10.0, px_per_mm=8.5)
     chips = "".join(_render_token_chip_html(token, item["width"], machine=machine) for token, item in zip(tokens, layout))
     total = sum(_parse_token(t)["mm"] for t in tokens)
     total_html = f"<div class='setup-total'>{html.escape(total_label or 'Total')}: {total:.2f} mm</div>" if total_label else ""
@@ -387,9 +365,6 @@ def _merged_widths(rows):
 
 
 def _preview_sections(payload):
-    sections = payload.get("setup_preview")
-    if isinstance(sections, list) and sections:
-        return sections
     machine = payload.get("machine", "M1")
     thickness = payload.get("thickness", "0.5")
     merged = _merged_widths(payload.get("rows", []))
@@ -398,9 +373,7 @@ def _preview_sections(payload):
         width = str(item["width"])
         qty = int(item["qty"])
         rules = get_rules(machine, thickness)
-        male_tokens = []
-        female_tokens = []
-        visual_male, visual_female = _build_visual_tokens(machine, width, rules, male_tokens, female_tokens)
+        visual_male, visual_female = _build_visual_tokens(machine, width, rules, [], [])
         out.append({
             "width": width,
             "qty": qty,
@@ -413,45 +386,23 @@ def _preview_sections(payload):
     return out
 
 
-def _render_setup_preview(payload):
-    sections = _preview_sections(payload)
-    if not sections:
-        return
-    st.markdown("""
-    <style>
-    .setup-preview-card{background:rgba(255,255,255,.03);border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:14px 16px;margin:12px 0}
-    .setup-preview-title{font-size:1.2rem;font-weight:700;margin-bottom:2px}
-    .setup-preview-sub{font-size:.92rem;opacity:.8;margin-bottom:6px}
-    .setup-section-heading{font-weight:700;margin-top:8px;margin-bottom:4px}
-    .setup-token-strip{display:flex;flex-wrap:nowrap;align-items:stretch;gap:8px;overflow:hidden;padding:2px 0 10px 0;width:100%}
-    .setup-token{display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:52px;border:1px solid;border-radius:10px;padding:6px 10px;box-sizing:border-box;line-height:1.05;white-space:nowrap;overflow:hidden}
-    .setup-token.tight .token-label,.setup-token.ultra-tight .token-label{display:none}
-    .setup-token.tight .token-value{font-size:12px}.setup-token.ultra-tight .token-value{font-size:11px}
-    .setup-token .token-label{font-size:10px;font-weight:700}.setup-token .token-value{font-size:13px;font-weight:700;max-width:100%;text-overflow:ellipsis;overflow:hidden}
-    .setup-token .token-stack{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px}
-    .setup-token .stack-line{display:block;font-size:11px;line-height:1.05}
-    .setup-total{font-size:12px;color:#cbd5e1;margin-top:-2px}
-    .setup-empty{font-size:12px;color:#94a3b8;padding:4px 0 8px 0}
-    </style>
-    """, unsafe_allow_html=True)
-    st.subheader("Setup Preview")
-    for section in sections:
-        width = section.get("width", "")
-        qty = section.get("qty", "")
-        machine = section.get("machine", payload.get("machine", "M1"))
-        thickness = section.get("thickness", payload.get("thickness", ""))
-        rules = section.get("rules", get_rules(machine, thickness))
-        st.markdown(
-            f"<div class='setup-preview-card'><div class='setup-preview-title'>WIDTH {html.escape(str(width))} x{html.escape(str(qty))}</div>"
-            f"<div class='setup-preview-sub'>Machine: {html.escape(str(machine))} &nbsp;&nbsp; Thickness: {html.escape(str(thickness))}<br>"
-            f"Tolerance: {html.escape(str(rules.get('tolerance', '')))}</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown("<div class='setup-section-heading'>MALE</div>", unsafe_allow_html=True)
-        st.markdown(_render_token_strip_html(section.get("male_tokens", []), total_label="Total", machine=machine), unsafe_allow_html=True)
-        st.markdown("<div class='setup-section-heading'>FEMALE</div>", unsafe_allow_html=True)
-        st.markdown(_render_token_strip_html(section.get("female_tokens", []), total_label="Total", machine=machine), unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+def _render_setup_preview_one(section):
+    width = section.get("width", "")
+    qty = section.get("qty", "")
+    machine = section.get("machine", "M1")
+    thickness = section.get("thickness", "")
+    rules = section.get("rules", get_rules(machine, thickness))
+    st.markdown(
+        f"<div class='setup-preview-card'><div class='setup-preview-title'>WIDTH {html.escape(str(width))} x{html.escape(str(qty))}</div>"
+        f"<div class='setup-preview-sub'>Machine: {html.escape(str(machine))} &nbsp;&nbsp; Thickness: {html.escape(str(thickness))}<br>"
+        f"Tolerance: {html.escape(str(rules.get('tolerance', '')))}</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div class='setup-section-heading'>MALE</div>", unsafe_allow_html=True)
+    st.markdown(_render_token_strip_html(section.get("male_tokens", []), total_label="Total", machine=machine), unsafe_allow_html=True)
+    st.markdown("<div class='setup-section-heading'>FEMALE</div>", unsafe_allow_html=True)
+    st.markdown(_render_token_strip_html(section.get("female_tokens", []), total_label="Total", machine=machine), unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 machine_id = get_machine_id()
@@ -467,22 +418,28 @@ if fullscreen:
     header[data-testid="stHeader"] {display:none !important;}
     div[data-testid="stToolbar"] {display:none !important;}
     [data-testid="collapsedControl"] {display:none !important;}
-    .block-container {padding-top:0.6rem !important; padding-bottom:1rem !important; max-width: 100% !important;}
-    .hero {padding:18px 22px;border-radius:18px;background:linear-gradient(135deg, rgba(239,68,68,0.22), rgba(127,29,29,0.24));border:1px solid rgba(255,255,255,0.10);margin-bottom:16px}
-    .small-muted {opacity:0.75;font-size:0.9rem}
-    .queue-row{display:grid;grid-template-columns:110px 1.2fr 1fr .8fr 1fr 1fr;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.06);align-items:center}
-    .queue-head{font-weight:700;opacity:.8}
+    .block-container {padding-top:.35rem !important; padding-bottom:1rem !important; max-width: 100% !important;}
+    .receiver-sticky-top{position:sticky;top:0;z-index:100;background:rgba(4,8,18,.96);backdrop-filter:blur(8px);padding-top:8px;padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid rgba(255,255,255,.08)}
+    .receiver-main-title{text-align:center;font-size:2rem;font-weight:700;margin:0}
+    .hero{padding:18px 22px;border-radius:18px;background:linear-gradient(135deg, rgba(239,68,68,.22), rgba(127,29,29,.24));border:1px solid rgba(255,255,255,.10);margin-bottom:16px}
+    .small-muted{opacity:.75;font-size:.9rem}
+    .setup-preview-card{background:rgba(255,255,255,.03);border:1px solid rgba(148,163,184,.18);border-radius:16px;padding:18px 18px;margin:10px 0}
+    .setup-preview-title{font-size:2rem;font-weight:700;margin-bottom:4px}
+    .setup-preview-sub{font-size:1.05rem;opacity:.85;margin-bottom:12px}
+    .setup-section-heading{font-weight:700;margin-top:12px;margin-bottom:8px;font-size:1.1rem}
+    .setup-token-strip{display:flex;flex-wrap:nowrap;align-items:stretch;gap:10px;overflow:hidden;padding:4px 0 10px 0;width:100%}
+    .setup-token{display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:72px;border:1px solid;border-radius:12px;padding:8px 12px;box-sizing:border-box;line-height:1.05;white-space:nowrap;overflow:hidden}
+    .setup-token .token-label{font-size:12px;font-weight:700}
+    .setup-token .token-value{font-size:18px;font-weight:700;max-width:100%;text-overflow:ellipsis;overflow:hidden}
+    .setup-token .token-stack{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+    .setup-token .stack-line{display:block;font-size:15px;line-height:1.05}
+    .setup-total{font-size:14px;color:#cbd5e1;margin-top:2px}
+    .setup-empty{font-size:12px;color:#94a3b8;padding:4px 0 8px 0}
+    div[data-baseweb="tab-list"]{justify-content:center}
     </style>
     """, unsafe_allow_html=True)
 
-st.title(f"Receiver Queue — {machine_id}")
-
-try:
-    store = _fetch_store_read()
-except Exception as e:
-    st.error(f"Could not load queue: {e}")
-    st.stop()
-
+store = _fetch_store_read()
 machine_store = store["machines"].get(machine_id, {"queue": [], "history": []})
 queue = machine_store.get("queue", [])
 history = machine_store.get("history", [])
@@ -513,12 +470,16 @@ if beep_now:
     </script>
     """, height=0)
 
+st.markdown(f"<div class='receiver-sticky-top'><div class='receiver-main-title'>Receiver — {html.escape(machine_id)}</div></div>", unsafe_allow_html=True)
+
+center_col = st.columns([1, 2, 1])[1]
+with center_col:
+    mode = st.segmented_control("Menu", ["Active Job", "Queue", "History"], default="Active Job", label_visibility="collapsed")
+
 top1, top2, top3 = st.columns(3)
 top1.metric("Machine", machine_id)
 top2.metric("Queue", len(queue))
 top3.metric("History", len(history))
-
-mode = st.segmented_control("View", ["Active Job", "Queue", "History"], default="Active Job")
 
 if mode == "Active Job":
     if not active_job:
@@ -551,107 +512,76 @@ if mode == "Active Job":
 
         st.subheader("Job Details")
         st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
-        _render_setup_preview(payload)
+
+        sections = _preview_sections(payload)
+        active_qid = active_job.get("queue_id", "")
+        state_key = f"preview_idx_{machine_id}"
+        if st.session_state.get("preview_active_qid") != active_qid:
+            st.session_state["preview_active_qid"] = active_qid
+            st.session_state[state_key] = 0
+        preview_idx = st.session_state.get(state_key, 0)
+        preview_idx = max(0, min(preview_idx, max(len(sections) - 1, 0)))
+
+        if sections:
+            st.subheader("Setup Preview")
+            nav_cols = st.columns([1, 16, 1])
+            if nav_cols[0].button("◀", use_container_width=True, disabled=preview_idx <= 0):
+                st.session_state[state_key] = max(0, preview_idx - 1)
+                st.rerun()
+            with nav_cols[1]:
+                _render_setup_preview_one(sections[preview_idx])
+            if nav_cols[2].button("▶", use_container_width=True, disabled=preview_idx >= len(sections) - 1):
+                st.session_state[state_key] = min(len(sections) - 1, preview_idx + 1)
+                st.rerun()
 
         if st.session_state.get("confirm_complete_queue_id") == active_job.get("queue_id"):
             st.warning(f"Complete job {payload.get('job_code', '-') }?")
             c1, c2, c3 = st.columns([1, 1, 4])
             if c1.button("Yes, Complete", type="primary", use_container_width=True):
-                try:
-                    ok, job_code = complete_current_job(machine_id)
-                    st.session_state["confirm_complete_queue_id"] = None
-                    if ok:
-                        st.success(f"Completed {job_code}")
-                        st.rerun()
-                    else:
-                        st.warning(job_code)
-                except Exception as e:
-                    st.error(f"Complete failed: {e}")
+                ok, job_code = complete_current_job(machine_id)
+                st.session_state["confirm_complete_queue_id"] = None
+                if ok:
+                    st.success(f"Completed {job_code}")
+                    st.rerun()
+                else:
+                    st.warning(job_code)
             if c2.button("Cancel", use_container_width=True):
                 st.session_state["confirm_complete_queue_id"] = None
                 st.rerun()
             c3.caption("Confirm to move this job to History and load the next queued job.")
         else:
-            c1, c2 = st.columns([1, 4])
-            if c1.button("Complete", type="primary", use_container_width=True):
-                st.session_state["confirm_complete_queue_id"] = active_job.get("queue_id")
-                st.rerun()
-            c2.caption("Press Complete to confirm and move this job to History.")
+            bottom = st.columns([2, 3, 2])[1]
+            with bottom:
+                if st.button("Complete", type="primary", use_container_width=True):
+                    st.session_state["confirm_complete_queue_id"] = active_job.get("queue_id")
+                    st.rerun()
 
-def _find_queue_job(qid):
-    for item in queue:
-        if item.get("queue_id") == qid:
-            return item
-    return None
+elif mode == "Queue":
+    st.info("This rate-limit fix bundle keeps the receiver stable. Use your previous queue dialog version after this fix is deployed if you still want queue dialog actions.")
+    st.dataframe([
+        {
+            "Job Code": item.get("payload", {}).get("job_code", ""),
+            "Coil": item.get("payload", {}).get("coil_number", ""),
+            "Thickness": item.get("payload", {}).get("thickness", ""),
+            "Material": item.get("payload", {}).get("material", ""),
+            "Sent At": fmt_dt(item.get("sent_at")),
+        }
+        for item in queue
+    ], use_container_width=True, hide_index=True)
 
-if mode == "Queue":
-    st.subheader("Orders in Queue")
-    if not queue:
-        st.info("Queue is empty.")
-    else:
-        header = st.columns([1.1, 1.3, 1.2, 0.8, 1.0, 1.0])
-        for col, title in zip(header, ["Open", "Job Code", "Coil", "Thick", "Material", "Sent"]):
-            col.caption(title)
-        for item in queue:
-            payload = item.get("payload", {})
-            cols = st.columns([1.1, 1.3, 1.2, 0.8, 1.0, 1.0])
-            if cols[0].button("Open", key=f"open_q_{item.get('queue_id')}"):
-                st.session_state["queue_dialog_id"] = item.get("queue_id")
-            cols[1].write(payload.get("job_code", ""))
-            cols[2].write(payload.get("coil_number", ""))
-            cols[3].write(payload.get("thickness", ""))
-            cols[4].write(payload.get("material", ""))
-            cols[5].write(fmt_dt(item.get("sent_at")))
-
-        if st.session_state.get("queue_dialog_id"):
-            job = _find_queue_job(st.session_state["queue_dialog_id"])
-            if job:
-                payload = job.get("payload", {})
-                if hasattr(st, "dialog"):
-                    @st.dialog("Queue Job Details", width="large")
-                    def _queue_job_dialog():
-                        st.write({
-                            "job_code": payload.get("job_code", ""),
-                            "coil_number": payload.get("coil_number", ""),
-                            "thickness": payload.get("thickness", ""),
-                            "material": payload.get("material", ""),
-                            "coil_width": payload.get("coil_width", ""),
-                            "sent_at": fmt_dt(job.get("sent_at")),
-                        })
-                        st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
-                        _render_setup_preview(payload)
-                        c1, c2 = st.columns(2)
-                        if c1.button("Priority", type="primary", use_container_width=True):
-                            ok, msg = prioritize_job(machine_id, job.get("queue_id", ""))
-                            st.session_state["queue_dialog_id"] = None
-                            if ok:
-                                st.success(f"Priority set for {msg}")
-                                st.rerun()
-                            else:
-                                st.error(msg)
-                        if c2.button("Close", use_container_width=True):
-                            st.session_state["queue_dialog_id"] = None
-                            st.rerun()
-                    _queue_job_dialog()
-                else:
-                    st.info("Dialog view is not supported in this Streamlit version.")
-            else:
-                st.session_state["queue_dialog_id"] = None
-
-if mode == "History":
-    st.subheader("Completed Jobs History")
-    if not history:
-        st.info("No history yet.")
-    else:
-        rows = []
-        for item in history:
-            payload = item.get("payload", {})
-            rows.append({
-                "Job Code": payload.get("job_code", ""),
-                "Coil": payload.get("coil_number", ""),
-                "Thickness": payload.get("thickness", ""),
-                "Material": payload.get("material", ""),
-                "Completed At": fmt_dt(item.get("completed_at")),
-                "Sent At": fmt_dt(item.get("sent_at")),
-            })
+else:
+    rows = [
+        {
+            "Job Code": item.get("payload", {}).get("job_code", ""),
+            "Coil": item.get("payload", {}).get("coil_number", ""),
+            "Thickness": item.get("payload", {}).get("thickness", ""),
+            "Material": item.get("payload", {}).get("material", ""),
+            "Completed At": fmt_dt(item.get("completed_at")),
+            "Sent At": fmt_dt(item.get("sent_at")),
+        }
+        for item in history
+    ]
+    if rows:
         st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("No history yet.")
