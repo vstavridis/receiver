@@ -1,3 +1,4 @@
+
 import base64
 import json
 import html
@@ -15,9 +16,7 @@ except Exception:
 
 st.set_page_config(page_title="Slitting Receiver", layout="wide")
 
-
 READ_INTERVAL_MS = 3000
-
 
 def qp(name, default=None):
     try:
@@ -25,25 +24,20 @@ def qp(name, default=None):
     except Exception:
         return default
 
-
 def get_machine_id():
     return str(qp("machine", "M1"))
-
 
 def sound_enabled():
     return str(qp("sound", "1")).lower() not in {"0", "false", "no", "off"}
 
-
 def fullscreen_enabled():
     return str(qp("fullscreen", "1")).lower() not in {"0", "false", "no", "off"}
-
 
 def _get_secret(name: str, default=None):
     try:
         return st.secrets[name]
     except Exception:
         return default
-
 
 def _headers(token: str):
     return {
@@ -52,10 +46,8 @@ def _headers(token: str):
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-
 def _api_url(repo: str, path: str) -> str:
     return f"https://api.github.com/repos/{repo}/contents/{path}"
-
 
 def _default_store():
     return {
@@ -65,7 +57,6 @@ def _default_store():
             "M2": {"queue": [], "history": []},
         },
     }
-
 
 def _normalize_machine(value):
     if isinstance(value, dict):
@@ -80,7 +71,6 @@ def _normalize_machine(value):
         return {"queue": value, "history": []}
     return {"queue": [], "history": []}
 
-
 def _normalize_store(store):
     if not isinstance(store, dict):
         store = _default_store()
@@ -92,7 +82,6 @@ def _normalize_store(store):
         store["machines"][mid] = _normalize_machine(store["machines"].get(mid))
     return store
 
-
 def _fetch_store_read():
     token = _get_secret("DISPLAY_GITHUB_TOKEN")
     repo = _get_secret("DISPLAY_GITHUB_REPO")
@@ -100,7 +89,6 @@ def _fetch_store_read():
     queue_path = _get_secret("QUEUE_PATH", "queue.json")
     if not token or not repo:
         raise RuntimeError("Receiver app is missing DISPLAY_GITHUB_TOKEN and/or DISPLAY_GITHUB_REPO secrets")
-
     r = requests.get(_api_url(repo, queue_path), headers=_headers(token), params={"ref": branch}, timeout=12)
     if r.status_code == 404:
         return _default_store()
@@ -109,7 +97,6 @@ def _fetch_store_read():
     payload = r.json()
     decoded = base64.b64decode(payload["content"]).decode("utf-8")
     return _normalize_store(json.loads(decoded))
-
 
 def _fetch_store_write_context():
     token = _get_secret("DISPLAY_GITHUB_TOKEN")
@@ -129,7 +116,6 @@ def _fetch_store_write_context():
         store = _normalize_store(json.loads(decoded))
     return store, repo, branch, token, queue_path
 
-
 def _put_store(store, repo, branch, token, queue_path, message):
     existing = requests.get(_api_url(repo, queue_path), headers=_headers(token), params={"ref": branch}, timeout=12)
     sha = None
@@ -146,7 +132,6 @@ def _put_store(store, repo, branch, token, queue_path, message):
     if r.status_code >= 400:
         raise RuntimeError(f"GitHub write failed ({r.status_code}): {r.text}")
 
-
 def complete_current_job(machine_id: str):
     store, repo, branch, token, queue_path = _fetch_store_write_context()
     queue = store["machines"][machine_id]["queue"]
@@ -160,7 +145,6 @@ def complete_current_job(machine_id: str):
     store["version"] = int(store.get("version", 0)) + 1
     _put_store(store, repo, branch, token, queue_path, f"Complete job {job.get('queue_id', '')} on {machine_id}")
     return True, job.get("payload", {}).get("job_code", "")
-
 
 def prioritize_job(machine_id: str, queue_id: str):
     store, repo, branch, token, queue_path = _fetch_store_write_context()
@@ -176,7 +160,6 @@ def prioritize_job(machine_id: str, queue_id: str):
     _put_store(store, repo, branch, token, queue_path, f"Prioritize job {queue_id} on {machine_id}")
     return True, item.get("payload", {}).get("job_code", "")
 
-
 def fmt_dt(value):
     if not value:
         return "-"
@@ -187,7 +170,6 @@ def fmt_dt(value):
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return str(value)
-
 
 def to_float(v, default=0.0):
     try:
@@ -200,6 +182,13 @@ def to_float(v, default=0.0):
     except Exception:
         return default
 
+def fmt_num(v):
+    n = to_float(v, None)
+    if n is None:
+        return "-"
+    if abs(n - round(n)) < 1e-9:
+        return str(int(round(n)))
+    return f"{n:.2f}".rstrip("0").rstrip(".")
 
 def map_rule(machine, thickness):
     t = to_float(thickness, 0.0)
@@ -219,7 +208,6 @@ def map_rule(machine, thickness):
         return 2.5
     return 3.0
 
-
 def get_rules(machine, thickness):
     rt = map_rule(machine, thickness)
     if machine == "M1":
@@ -237,7 +225,6 @@ def get_rules(machine, thickness):
     }
     group, tolerance, tsonta, knife = table[rt]
     return {"group": group, "tolerance": tolerance, "tsonta": tsonta, "knife": knife, "rubber": knife, "max_knives": ""}
-
 
 def _parse_token(token_text):
     t = str(token_text or "").strip()
@@ -263,7 +250,6 @@ def _parse_token(token_text):
         mm = to_float(label, 0.0)
     return {"raw": t, "label": label or t, "mm": mm, "type": token_type}
 
-
 def _build_visual_tokens(machine, width, rules, male_tokens, female_tokens):
     width_value = to_float(width, 0.0)
     male = []
@@ -276,18 +262,15 @@ def _build_visual_tokens(machine, width, rules, male_tokens, female_tokens):
     female += [f"TS {rules.get('tsonta', '')}", f"K{rules.get('knife', '10')}"]
     return male, female
 
-
 def _token_min_width(token_type):
-    return {"knife": 40.0, "rubber": 40.0, "spacer": 40.0, "tsonta": 80.0}.get(token_type, 40.0)
+    return {"knife": 52.0, "rubber": 52.0, "spacer": 52.0, "tsonta": 98.0}.get(token_type, 52.0)
 
-
-def _token_raw_width(meta, px_per_mm=8.5):
+def _token_raw_width(meta, px_per_mm=11.5):
     mm_for_visual = 6.0 if 0 < meta["mm"] < 6 else meta["mm"]
     min_width = _token_min_width(meta["type"])
     return max(min_width, mm_for_visual * px_per_mm if mm_for_visual > 0 else min_width)
 
-
-def _fit_token_widths(tokens, width_available, gap=10.0, px_per_mm=8.5):
+def _fit_token_widths(tokens, width_available, gap=14.0, px_per_mm=11.5):
     if not tokens:
         return []
     metas = [_parse_token(token) for token in tokens]
@@ -295,7 +278,7 @@ def _fit_token_widths(tokens, width_available, gap=10.0, px_per_mm=8.5):
     raws = [_token_raw_width(meta, px_per_mm=px_per_mm) for meta in metas]
     count = len(tokens)
     gap_total = gap * max(count - 1, 0)
-    usable = max(width_available - gap_total, count * 20.0)
+    usable = max(width_available - gap_total, count * 30.0)
     min_total = sum(mins)
     raw_total = sum(raws)
     if raw_total <= usable:
@@ -306,22 +289,19 @@ def _fit_token_widths(tokens, width_available, gap=10.0, px_per_mm=8.5):
         widths = [mins[i] + (raws[i] - mins[i]) * ratio for i in range(count)]
     else:
         forced = usable / max(count, 1)
-        widths = [max(32.0, forced) for _ in range(count)]
+        widths = [max(42.0, forced) for _ in range(count)]
     return [{"meta": metas[i], "width": widths[i], "gap": gap} for i in range(count)]
-
 
 def _html_token_palette():
     return {
         "spacer": {"fill": "#1f2937", "stroke": "#475569", "text": "#e5e7eb", "tag": "#94a3b8"},
         "rubber": {"fill": "#123a1d", "stroke": "#16a34a", "text": "#dcfce7", "tag": "#86efac"},
-        "knife": {"fill": "#3f1d1d", "stroke": "#b91c1c", "text": "#fee2e2", "tag": "#fca5a5"},
-        "tsonta": {"fill": "#3b2a13", "stroke": "#d97706", "text": "#fef3c7", "tag": "#fcd34d"},
+        "knife": {"fill": "#3f1d1d", "stroke": "#ef4444", "text": "#fee2e2", "tag": "#fca5a5"},
+        "tsonta": {"fill": "#3b2a13", "stroke": "#f59e0b", "text": "#fef3c7", "tag": "#fcd34d"},
     }
-
 
 def _token_short_label(token_type):
     return {"spacer": "S", "rubber": "R", "knife": "K", "tsonta": "TS"}.get(token_type, "")
-
 
 def _render_token_chip_html(token, width, machine="M1"):
     meta = _parse_token(token)
@@ -338,22 +318,20 @@ def _render_token_chip_html(token, width, machine="M1"):
     else:
         value_html = value
     return (
-        f"<span class='setup-token' style='width:{max(32, int(round(width)))}px;background:{palette['fill']};border-color:{palette['stroke']};color:{palette['text']}'>"
+        f"<span class='setup-token' style='width:{max(42, int(round(width)))}px;background:{palette['fill']};border-color:{palette['stroke']};color:{palette['text']}'>"
         f"<span class='token-label' style='color:{palette['tag']}'>{short_label}</span>"
         f"<span class='token-value'>{value_html}</span>"
         f"</span>"
     )
 
-
-def _render_token_strip_html(tokens, width_available=1200, total_label=None, machine="M1"):
+def _render_token_strip_html(tokens, width_available=1400, total_label=None, machine="M1"):
     if not tokens:
         return "<div class='setup-empty'>No setup yet</div>"
-    layout = _fit_token_widths(tokens, width_available, gap=10.0, px_per_mm=8.5)
+    layout = _fit_token_widths(tokens, width_available, gap=14.0, px_per_mm=11.5)
     chips = "".join(_render_token_chip_html(token, item["width"], machine=machine) for token, item in zip(tokens, layout))
     total = sum(_parse_token(t)["mm"] for t in tokens)
     total_html = f"<div class='setup-total'>{html.escape(total_label or 'Total')}: {total:.2f} mm</div>" if total_label else ""
     return f"<div class='setup-token-strip'>{chips}</div>{total_html}"
-
 
 def _merged_widths(rows):
     counter = Counter()
@@ -365,7 +343,6 @@ def _merged_widths(rows):
             continue
         counter[width] += int(to_float(row.get("qty"), 0))
     return [{"width": width, "qty": qty} for width, qty in counter.items()]
-
 
 def _preview_sections(payload):
     sections = payload.get("setup_preview")
@@ -392,7 +369,6 @@ def _preview_sections(payload):
             "female_tokens": visual_female,
         })
     return out
-
 
 def _render_setup_preview_one(section):
     width = section.get("width", "")
@@ -428,23 +404,24 @@ if fullscreen:
     .block-container {padding-top:.2rem !important; padding-bottom:1rem !important; max-width:100% !important;}
     .receiver-sticky-top{position:sticky;top:0;z-index:100;background:transparent;padding-top:6px;padding-bottom:8px;margin-bottom:8px}
     .receiver-main-title{text-align:center;font-size:2rem;font-weight:700;margin:0}
-    .menu-wrap{display:flex;justify-content:center;align-items:center;margin-top:8px}
     .hero{padding:18px 22px;border-radius:18px;background:linear-gradient(135deg, rgba(239,68,68,.22), rgba(127,29,29,.24));border:1px solid rgba(255,255,255,.10);margin-bottom:16px}
-    .small-muted{opacity:.75;font-size:.9rem}
-    .setup-preview-card{background:rgba(255,255,255,.03);border:1px solid rgba(148,163,184,.18);border-radius:16px;padding:18px 18px;margin:10px 0}
-    .setup-preview-title{font-size:2rem;font-weight:700;margin-bottom:4px}
-    .setup-preview-sub{font-size:1.05rem;opacity:.85;margin-bottom:12px}
-    .setup-section-heading{font-weight:700;margin-top:12px;margin-bottom:8px;font-size:1.1rem}
-    .setup-token-strip{display:flex;flex-wrap:nowrap;align-items:stretch;gap:10px;overflow:hidden;padding:4px 0 10px 0;width:100%}
-    .setup-token{display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:72px;border:1px solid;border-radius:12px;padding:8px 12px;box-sizing:border-box;line-height:1.05;white-space:nowrap;overflow:hidden}
-    .setup-token .token-label{font-size:12px;font-weight:700}
-    .setup-token .token-value{font-size:18px;font-weight:700;max-width:100%;text-overflow:ellipsis;overflow:hidden}
+    .small-muted{opacity:.75;font-size:.95rem}
+    .setup-preview-card{background:rgba(255,255,255,.03);border:1px solid rgba(148,163,184,.18);border-radius:18px;padding:22px 22px;margin:10px 0}
+    .setup-preview-title{font-size:2.25rem;font-weight:700;margin-bottom:10px}
+    .setup-preview-sub{font-size:1.15rem;opacity:.9;margin-bottom:18px}
+    .setup-section-heading{font-weight:700;margin-top:16px;margin-bottom:10px;font-size:1.5rem}
+    .setup-token-strip{display:flex;flex-wrap:nowrap;align-items:stretch;gap:14px;overflow:hidden;padding:6px 0 12px 0;width:100%}
+    .setup-token{display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:96px;border:1px solid;border-radius:14px;padding:10px 16px;box-sizing:border-box;line-height:1.05;white-space:nowrap;overflow:hidden}
+    .setup-token .token-label{font-size:14px;font-weight:700}
+    .setup-token .token-value{font-size:28px;font-weight:700;max-width:100%;text-overflow:ellipsis;overflow:hidden}
     .setup-token .token-stack{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
-    .setup-token .stack-line{display:block;font-size:15px;line-height:1.05}
-    .setup-total{font-size:14px;color:#cbd5e1;margin-top:2px}
-    .setup-empty{font-size:12px;color:#94a3b8;padding:4px 0 8px 0}
-    div[data-baseweb="tab-list"]{justify-content:center;min-width:520px}
-    div[data-baseweb="tab"]{flex:1;justify-content:center}
+    .setup-token .stack-line{display:block;font-size:22px;line-height:1.05}
+    .setup-total{font-size:22px;color:#cbd5e1;margin-top:6px}
+    .setup-empty{font-size:14px;color:#94a3b8;padding:4px 0 8px 0}
+    div[data-baseweb="tab-list"]{justify-content:center;min-width:640px}
+    div[data-baseweb="tab"]{flex:1;justify-content:center;font-size:1.02rem}
+    div[data-baseweb="tab-highlight"]{height:100%}
+    [data-testid="stDialog"] button[aria-label="Close"]{display:none !important;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -485,7 +462,7 @@ if beep_now:
     """, height=0)
 
 st.markdown(f"<div class='receiver-sticky-top'><div class='receiver-main-title'>Receiver — {html.escape(machine_id)}</div></div>", unsafe_allow_html=True)
-center_col = st.columns([1, 2.6, 1])[1]
+center_col = st.columns([1, 3.2, 1])[1]
 with center_col:
     mode = st.segmented_control("Menu", ["Active Job", "Queue", "History"], default="Active Job", label_visibility="collapsed")
 
@@ -525,16 +502,16 @@ if mode == "Active Job":
                 )
                 a1, a2, a3, a4, a5 = st.columns(5)
                 a1.metric("Cut Plan", f'{payload.get("cut_plan", 1)}x')
-                a2.metric("Coil Width", payload.get("coil_width", "-"))
-                a3.metric("Coil Kg", payload.get("coil_kg", "-"))
-                a4.metric("Slitting Kg", summary.get("slitting_kg", payload.get("slitting_kg", "-")))
-                a5.metric("Remaining", summary.get("remaining", "-"))
+                a2.metric("Coil Width", fmt_num(payload.get("coil_width", "-")))
+                a3.metric("Coil Kg", fmt_num(payload.get("coil_kg", "-")))
+                a4.metric("Material", str(payload.get("material", "-")))
+                a5.metric("Remaining", fmt_num(summary.get("remaining", "-")))
 
                 b1, b2, b3, b4 = st.columns(4)
-                b1.metric("Waste Kg", summary.get("waste_kg", "-"))
-                b2.metric("Waste %", summary.get("waste_pct", "-"))
-                b3.metric("Sent At", fmt_dt(active_job.get("sent_at")))
-                b4.metric("Next Jobs", max(len(queue) - 1, 0))
+                b1.metric("Waste Kg", fmt_num(summary.get("waste_kg", "-")))
+                b2.metric("Waste %", fmt_num(summary.get("waste_pct", "-")))
+                b3.metric("Thickness", str(payload.get("thickness", "-")))
+                b4.metric("Coil", str(payload.get("coil_number", "-")))
 
                 st.subheader("Job Details")
                 st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
@@ -571,13 +548,11 @@ if mode == "Active Job":
                     st.session_state["confirm_complete_queue_id"] = active_job.get("queue_id")
                     st.rerun()
 
-
 def _find_queue_job(qid):
     for item in queue:
         if item.get("queue_id") == qid:
             return item
     return None
-
 
 if mode == "Queue":
     st.subheader("Orders in Queue")
@@ -604,15 +579,6 @@ if mode == "Queue":
                 payload = job.get("payload", {})
                 @st.dialog("Queue Job Details", width="large")
                 def _queue_job_dialog():
-                    st.write({
-                        "job_code": payload.get("job_code", ""),
-                        "coil_number": payload.get("coil_number", ""),
-                        "thickness": payload.get("thickness", ""),
-                        "material": payload.get("material", ""),
-                        "coil_width": payload.get("coil_width", ""),
-                        "sent_at": fmt_dt(job.get("sent_at")),
-                    })
-                    st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
                     sections = _preview_sections(payload)
                     if sections:
                         qstate = f"queue_preview_idx_{job.get('queue_id')}"
@@ -627,18 +593,16 @@ if mode == "Queue":
                         if nav_cols[2].button("▶", key=f"dlg_next_{job.get('queue_id')}", use_container_width=True, disabled=qidx >= len(sections) - 1):
                             st.session_state[qstate] = min(len(sections) - 1, qidx + 1)
                             st.rerun()
-                    c1, c2 = st.columns(2)
-                    if c1.button("Priority", type="primary", use_container_width=True):
-                        ok, msg = prioritize_job(machine_id, job.get("queue_id", ""))
-                        st.session_state["queue_dialog_id"] = None
-                        if ok:
-                            st.success(f"Priority set for {msg}")
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                    if c2.button("Close", use_container_width=True):
-                        st.session_state["queue_dialog_id"] = None
-                        st.rerun()
+                    center = st.columns([2, 3, 2])[1]
+                    with center:
+                        if st.button("Priority", type="primary", use_container_width=True):
+                            ok, msg = prioritize_job(machine_id, job.get("queue_id", ""))
+                            st.session_state["queue_dialog_id"] = None
+                            if ok:
+                                st.success(f"Priority set for {msg}")
+                                st.rerun()
+                            else:
+                                st.error(msg)
                 _queue_job_dialog()
             elif not job:
                 st.session_state["queue_dialog_id"] = None
