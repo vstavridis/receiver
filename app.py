@@ -289,18 +289,30 @@ if mode == "Active Job":
         st.subheader("Job Details")
         st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
 
-        c1, c2 = st.columns([1, 4])
-        if c1.button("Complete", type="primary", use_container_width=True):
-            try:
-                ok, job_code = complete_current_job(machine_id)
-                if ok:
-                    st.success(f"Completed {job_code}")
-                    st.rerun()
-                else:
-                    st.warning(job_code)
-            except Exception as e:
-                st.error(f"Complete failed: {e}")
-        c2.caption("Completing the current job moves it to History and shows the next queued job automatically.")
+        if st.session_state.get("confirm_complete_queue_id") == active_job.get("queue_id"):
+            st.warning(f"Complete job {payload.get('job_code', '-') }?")
+            c1, c2, c3 = st.columns([1, 1, 4])
+            if c1.button("Yes, Complete", type="primary", use_container_width=True):
+                try:
+                    ok, job_code = complete_current_job(machine_id)
+                    st.session_state["confirm_complete_queue_id"] = None
+                    if ok:
+                        st.success(f"Completed {job_code}")
+                        st.rerun()
+                    else:
+                        st.warning(job_code)
+                except Exception as e:
+                    st.error(f"Complete failed: {e}")
+            if c2.button("Cancel", use_container_width=True):
+                st.session_state["confirm_complete_queue_id"] = None
+                st.rerun()
+            c3.caption("Confirm to move this job to History and load the next queued job.")
+        else:
+            c1, c2 = st.columns([1, 4])
+            if c1.button("Complete", type="primary", use_container_width=True):
+                st.session_state["confirm_complete_queue_id"] = active_job.get("queue_id")
+                st.rerun()
+            c2.caption("Press Complete to confirm and move this job to History.")
 
 elif mode == "Queue":
     st.subheader("Orders in Queue")
