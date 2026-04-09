@@ -1,48 +1,55 @@
 {
-  "version": 1,
+  "version": 3,
   "machines": {
-    "M1": [
-      {
-        "queue_id": "M1-J20260409-001-1",
-        "machine": "M1",
-        "status": "pending",
-        "sent_at": "2026-04-09T10:15:00Z",
-        "acknowledged_at": null,
-        "done_at": null,
-        "payload": {
-          "job_code": "J20260409-001",
+    "M1": {
+      "queue": [
+        {
+          "queue_id": "M1-J20260409-001-3",
           "machine": "M1",
-          "thickness": "0.8",
-          "material": "galvanized",
-          "coil_number": "C-120",
-          "coil_width": 1250,
-          "cut_plan": 1,
-          "summary": {
-            "waste_kg": 45,
-            "remaining": 12,
-            "slitting_kg": 4955
-          },
-          "rows": [
-            {
-              "qty": 2,
-              "width": 100,
-              "destination": "Customer A",
-              "meters": 1234,
-              "kg_per_strip": 400,
-              "total_kg": 800
+          "status": "pending",
+          "sent_at": "2026-04-09T10:15:00Z",
+          "completed_at": null,
+          "payload": {
+            "job_code": "J20260409-001",
+            "machine": "M1",
+            "thickness": "0.8",
+            "material": "galvanized",
+            "coil_number": "C-120",
+            "coil_width": 1250,
+            "coil_kg": 5000,
+            "cut_plan": 1,
+            "summary": {
+              "waste_kg": 45,
+              "remaining": 12,
+              "slitting_kg": 4955,
+              "waste_pct": 0.9
             },
-            {
-              "qty": 1,
-              "width": 200,
-              "destination": "Customer B",
-              "meters": 1234,
-              "kg_per_strip": 800,
-              "total_kg": 800
-            }
-          ]
+            "rows": [
+              {
+                "qty": 2,
+                "width": 100,
+                "destination": "Customer A",
+                "meters": 1234,
+                "kg_per_strip": 400,
+                "total_kg": 800
+              },
+              {
+                "qty": 1,
+                "width": 200,
+                "destination": "Customer B",
+                "meters": 1234,
+                "kg_per_strip": 800,
+                "total_kg": 800
+              }
+            ]
+          }
         }
-      }
-    ],
-    "M2": []
+      ],
+      "history": []
+    },
+    "M2": {
+      "queue": [],
+      "history": []
+    }
   }
 }
