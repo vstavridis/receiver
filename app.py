@@ -507,11 +507,12 @@ if mode == "Active Job":
                 a4.metric("Material", str(payload.get("material", "-")))
                 a5.metric("Remaining", fmt_num(summary.get("remaining", "-")))
 
-                b1, b2, b3, b4 = st.columns(4)
+                b1, b2, b3, b4, b5 = st.columns(5)
                 b1.metric("Waste Kg", fmt_num(summary.get("waste_kg", "-")))
                 b2.metric("Waste %", fmt_num(summary.get("waste_pct", "-")))
                 b3.metric("Thickness", str(payload.get("thickness", "-")))
                 b4.metric("Coil", str(payload.get("coil_number", "-")))
+                b5.metric("Meters", fmt_num(payload.get("meters", summary.get("meters", "-"))))
 
                 st.subheader("Job Details")
                 st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
@@ -575,24 +576,58 @@ if mode == "Queue":
 
         if st.session_state.get("queue_dialog_id"):
             job = _find_queue_job(st.session_state["queue_dialog_id"])
-            if job and hasattr(st, "dialog"):
+            if not job:
+                st.session_state["queue_dialog_id"] = None
+            elif hasattr(st, "dialog"):
                 payload = job.get("payload", {})
                 @st.dialog("Queue Job Details", width="large")
                 def _queue_job_dialog():
                     sections = _preview_sections(payload)
-                    if sections:
-                        qstate = f"queue_preview_idx_{job.get('queue_id')}"
-                        qidx = st.session_state.get(qstate, 0)
-                        qidx = max(0, min(qidx, len(sections) - 1))
-                        nav_cols = st.columns([1, 16, 1])
-                        if nav_cols[0].button("◀", key=f"dlg_prev_{job.get('queue_id')}", use_container_width=True, disabled=qidx <= 0):
-                            st.session_state[qstate] = max(0, qidx - 1)
-                            st.rerun()
-                        with nav_cols[1]:
-                            _render_setup_preview_one(sections[qidx])
-                        if nav_cols[2].button("▶", key=f"dlg_next_{job.get('queue_id')}", use_container_width=True, disabled=qidx >= len(sections) - 1):
-                            st.session_state[qstate] = min(len(sections) - 1, qidx + 1)
-                            st.rerun()
+                    qpage_key = f"queue_dialog_page_{job.get('queue_id')}"
+                    current_page = st.session_state.get(qpage_key, 0)
+                    current_page = max(0, min(current_page, len(sections)))
+
+                    nav_cols = st.columns([1, 16, 1])
+                    if nav_cols[0].button("◀", key=f"dlg_prev_{job.get('queue_id')}", use_container_width=True, disabled=current_page <= 0):
+                        st.session_state[qpage_key] = max(0, current_page - 1)
+                        st.rerun()
+
+                    with nav_cols[1]:
+                        if current_page == 0:
+                            summary = payload.get("summary", {})
+                            st.markdown(
+                                f"""
+                                <div class="hero">
+                                    <div class="small-muted">Queued job</div>
+                                    <h1 style="margin:.2rem 0 .5rem 0;">{html.escape(str(payload.get("job_code", "-")))}</h1>
+                                    <div class="small-muted">Coil {html.escape(str(payload.get("coil_number", "-")))} · Material {html.escape(str(payload.get("material", "-")))} · Thickness {html.escape(str(payload.get("thickness", "-")))}</div>
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+                            a1, a2, a3, a4, a5 = st.columns(5)
+                            a1.metric("Cut Plan", f'{payload.get("cut_plan", 1)}x')
+                            a2.metric("Coil Width", fmt_num(payload.get("coil_width", "-")))
+                            a3.metric("Coil Kg", fmt_num(payload.get("coil_kg", "-")))
+                            a4.metric("Material", str(payload.get("material", "-")))
+                            a5.metric("Remaining", fmt_num(summary.get("remaining", "-")))
+
+                            b1, b2, b3, b4, b5 = st.columns(5)
+                            b1.metric("Waste Kg", fmt_num(summary.get("waste_kg", "-")))
+                            b2.metric("Waste %", fmt_num(summary.get("waste_pct", "-")))
+                            b3.metric("Thickness", str(payload.get("thickness", "-")))
+                            b4.metric("Coil", str(payload.get("coil_number", "-")))
+                            b5.metric("Meters", fmt_num(payload.get("meters", summary.get("meters", "-"))))
+
+                            st.subheader("Job Details")
+                            st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
+                        elif sections:
+                            _render_setup_preview_one(sections[current_page - 1])
+
+                    if nav_cols[2].button("▶", key=f"dlg_next_{job.get('queue_id')}", use_container_width=True, disabled=current_page >= len(sections)):
+                        st.session_state[qpage_key] = min(len(sections), current_page + 1)
+                        st.rerun()
+
                     center = st.columns([2, 3, 2])[1]
                     with center:
                         if st.button("Priority", type="primary", use_container_width=True):
@@ -604,9 +639,6 @@ if mode == "Queue":
                             else:
                                 st.error(msg)
                 _queue_job_dialog()
-            elif not job:
-                st.session_state["queue_dialog_id"] = None
-
 if mode == "History":
     st.subheader("Completed Jobs History")
     if not history:
