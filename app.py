@@ -190,6 +190,17 @@ def fmt_num(v):
         return str(int(round(n)))
     return f"{n:.2f}".rstrip("0").rstrip(".")
 
+def compute_coil_meters(payload, summary=None):
+    summary = summary or {}
+    coil_kg = to_float(payload.get("coil_kg"), 0.0)
+    coil_width = to_float(payload.get("coil_width"), 0.0)
+    thickness = to_float(payload.get("thickness"), 0.0)
+    if coil_kg > 0 and coil_width > 0 and thickness > 0:
+        mass_per_meter = (coil_width * thickness * 1000.0 * 7.85) / 1000000.0
+        if mass_per_meter > 0:
+            return round(coil_kg / mass_per_meter, 1)
+    return to_float(payload.get("coil_meters", summary.get("coil_meters", summary.get("meters", 0.0))), 0.0)
+
 def map_rule(machine, thickness):
     t = to_float(thickness, 0.0)
     if machine == "M1":
@@ -209,22 +220,21 @@ def map_rule(machine, thickness):
     return 3.0
 
 def get_rules(machine, thickness):
-    rt = map_rule(machine, thickness)
+    t = to_float(thickness, 0.0)
     if machine == "M1":
+        rt = map_rule(machine, thickness)
         if rt == 1.0:
             return {"group": "M1-1", "tolerance": "Ø 1.00", "tsonta": "1.60 + 1.30", "knife": "10", "rubber": "10", "max_knives": "8"}
         if rt == 1.5:
             return {"group": "M1-1.5", "tolerance": "Ø 1.10", "tsonta": "1.60 + 1.10", "knife": "10", "rubber": "10", "max_knives": "6"}
         return {"group": "M1-2", "tolerance": "Ø 1.20", "tsonta": "1.60 + 1.00", "knife": "10", "rubber": "10", "max_knives": "8"}
-    table = {
-        1.0: ("LOW", "Ø 2.15", "1.80", "5"),
-        1.5: ("HIGH", "Ø 2.20", "1.70", "8"),
-        2.0: ("HIGH", "Ø 2.25", "1.60", "8"),
-        2.5: ("HIGH", "Ø 2.30", "1.50", "8"),
-        3.0: ("HIGH", "Ø 2.35", "1.40", "8"),
-    }
-    group, tolerance, tsonta, knife = table[rt]
-    return {"group": group, "tolerance": tolerance, "tsonta": tsonta, "knife": knife, "rubber": knife, "max_knives": ""}
+    if t <= 1.5:
+        return {"group": "LOW", "tolerance": "Ø 2.20", "tsonta": "1.70", "knife": "5", "rubber": "5", "max_knives": "-"}
+    if t <= 2.0:
+        return {"group": "HIGH", "tolerance": "Ø 2.25", "tsonta": "1.60", "knife": "8", "rubber": "8", "max_knives": "-"}
+    if t <= 2.5:
+        return {"group": "HIGH", "tolerance": "Ø 2.30", "tsonta": "1.50", "knife": "8", "rubber": "8", "max_knives": "-"}
+    return {"group": "HIGH", "tolerance": "Ø 2.35", "tsonta": "1.40", "knife": "8", "rubber": "8", "max_knives": "-"}
 
 def _parse_token(token_text):
     t = str(token_text or "").strip()
@@ -257,6 +267,8 @@ def _build_visual_tokens(machine, width, rules, male_tokens, female_tokens):
     if machine == "M1" and width_value > 50:
         male += [f"S24", f"R{rules.get('rubber', '10')}"]
         female += ["S12", "S2", f"R{rules.get('rubber', '10')}"]
+    elif machine == "M2" and width_value > 50:
+        male += ["R8", "S33"]
     male += list(male_tokens or [])
     female += list(female_tokens or [])
     female += [f"TS {rules.get('tsonta', '')}", f"K{rules.get('knife', '10')}"]
@@ -512,7 +524,7 @@ if mode == "Active Job":
                 b2.metric("Waste %", fmt_num(summary.get("waste_pct", "-")))
                 b3.metric("Thickness", str(payload.get("thickness", "-")))
                 b4.metric("Coil", str(payload.get("coil_number", "-")))
-                b5.metric("Meters", fmt_num(payload.get("meters", summary.get("meters", "-"))))
+                b5.metric("Meters", fmt_num(compute_coil_meters(payload, summary)))
 
                 st.subheader("Job Details")
                 st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
@@ -568,20 +580,29 @@ if mode == "Queue":
             cols = st.columns([1.0, 1.4, 1.2, 0.8, 1.0, 1.0])
             if cols[0].button("Open", key=f"open_q_{item.get('queue_id')}"):
                 st.session_state["queue_dialog_id"] = item.get("queue_id")
+                st.session_state["queue_dialog_rendered"] = False
+                st.session_state["queue_dialog_keepalive"] = False
             cols[1].write(payload.get("job_code", ""))
             cols[2].write(payload.get("coil_number", ""))
             cols[3].write(payload.get("thickness", ""))
             cols[4].write(payload.get("material", ""))
             cols[5].write(fmt_dt(item.get("sent_at")))
 
-        if st.session_state.get("queue_dialog_id"):
-            job = _find_queue_job(st.session_state["queue_dialog_id"])
+        dialog_id = st.session_state.get("queue_dialog_id")
+        if dialog_id and st.session_state.get("queue_dialog_rendered") and not st.session_state.get("queue_dialog_keepalive"):
+            st.session_state["queue_dialog_id"] = None
+            dialog_id = None
+
+        if dialog_id:
+            job = _find_queue_job(dialog_id)
             if not job:
                 st.session_state["queue_dialog_id"] = None
             elif hasattr(st, "dialog"):
                 payload = job.get("payload", {})
                 @st.dialog("Queue Job Details", width="large")
                 def _queue_job_dialog():
+                    st.session_state["queue_dialog_rendered"] = True
+                    st.session_state["queue_dialog_keepalive"] = False
                     sections = _preview_sections(payload)
                     qpage_key = f"queue_dialog_page_{job.get('queue_id')}"
                     current_page = st.session_state.get(qpage_key, 0)
@@ -589,6 +610,7 @@ if mode == "Queue":
 
                     nav_cols = st.columns([1, 16, 1])
                     if nav_cols[0].button("◀", key=f"dlg_prev_{job.get('queue_id')}", use_container_width=True, disabled=current_page <= 0):
+                        st.session_state["queue_dialog_keepalive"] = True
                         st.session_state[qpage_key] = max(0, current_page - 1)
                         st.rerun()
 
@@ -617,7 +639,7 @@ if mode == "Queue":
                             b2.metric("Waste %", fmt_num(summary.get("waste_pct", "-")))
                             b3.metric("Thickness", str(payload.get("thickness", "-")))
                             b4.metric("Coil", str(payload.get("coil_number", "-")))
-                            b5.metric("Meters", fmt_num(payload.get("meters", summary.get("meters", "-"))))
+                            b5.metric("Meters", fmt_num(compute_coil_meters(payload, summary)))
 
                             st.subheader("Job Details")
                             st.dataframe(payload.get("rows", []), use_container_width=True, hide_index=True)
@@ -625,6 +647,7 @@ if mode == "Queue":
                             _render_setup_preview_one(sections[current_page - 1])
 
                     if nav_cols[2].button("▶", key=f"dlg_next_{job.get('queue_id')}", use_container_width=True, disabled=current_page >= len(sections)):
+                        st.session_state["queue_dialog_keepalive"] = True
                         st.session_state[qpage_key] = min(len(sections), current_page + 1)
                         st.rerun()
 
@@ -632,6 +655,7 @@ if mode == "Queue":
                     with center:
                         if st.button("Priority", type="primary", use_container_width=True):
                             ok, msg = prioritize_job(machine_id, job.get("queue_id", ""))
+                            st.session_state["queue_dialog_keepalive"] = False
                             st.session_state["queue_dialog_id"] = None
                             if ok:
                                 st.success(f"Priority set for {msg}")
